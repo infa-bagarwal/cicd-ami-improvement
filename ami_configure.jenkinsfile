@@ -1,0 +1,202 @@
+config = "empty"
+
+
+def run_saas_config_recipe(list) {
+	def chefEnv = sh returnStdout: true, script: 'cd /home/cloud-user/chef-repo/.chef; knife environment list | grep $Environment | grep pod1-cdi-services | tail -1'
+    chefEnv = chefEnv.trim()
+    sh "\n echo Running saas Config recipe \n"
+    int j ;
+    for (int i = 0; i < list.size() ; i++) {
+        echo "running saas::config"
+        sh "ssh -o StrictHostKeyChecking=no -i $SSH_KEY $CLOUD_SSH_USER@${list[i].PrivateIp[0]}  \"sudo -E chef-client -o recipe[saas::config] -E $chefEnv\""
+
+        j = i ; 
+    }
+    
+    	if (env.execute_registerWarmpoolCatalog == 'true') 
+        { 
+        echo "running saas::registerWarmpoolCatalog"
+        sh "ssh -o StrictHostKeyChecking=no -i $SSH_KEY $CLOUD_SSH_USER@${list[j].PrivateIp[0]}  \"sudo -E chef-client -o recipe[saas::registerWarmpoolCatalog] -E $chefEnv\""
+		}
+		if (env.execute_serverless_agent_upgrade == 'true') 
+        { 
+
+        echo "running saas::serverless-agent-upgrade"
+        sh "ssh -o StrictHostKeyChecking=no -i $SSH_KEY $CLOUD_SSH_USER@${list[j].PrivateIp[0]}  \"sudo -E chef-client -o recipe[saas::serverless-agent-upgrade] -E $chefEnv\""
+		}
+    
+}
+
+
+
+pipeline{
+    agent {
+    node {
+       label 'cdi_devops'
+    }
+    }
+	
+	
+	
+	parameters {
+	string(name: 'CLOUD_SSH_USER',
+	defaultValue: 'cloud-user',
+    description : 'The ssh user from which user will login')
+	string(name: 'SSH_KEY',
+	defaultValue: '/home/cloud-user/keys/iics-qa-20181214.pem',
+    description : 'The key used for login')
+    choice(
+        name: 'Environment',
+        choices: ['Release-AWS', 'MREL-AWS', 'ML-AWS',
+		'Upgrade-AWS'],
+        description: 'Choose the Chef environment')
+		
+		booleanParam(
+				name: 'execute_registerWarmpoolCatalog',
+				defaultValue: false,
+				description: 'Do you want to exectute registerWarmpoolCatalog ? ')	
+				
+		booleanParam(
+				name: 'execute_serverless_agent_upgrade',
+				defaultValue: false,
+				description: 'Do you want to execute serverless-agent-upgrade ? ')	
+        
+        string(name: 'ap_northeast_1',
+        defaultValue: '',
+        description : 'Give only AMI value like ami-0e61a528d63cac625 and no spaces allowed ')
+
+        string(name: 'ap_southeast_1',
+        defaultValue: '',
+        description : 'Give only AMI value like ami-0e61a528d63cac625 and no spaces allowed ')
+
+        string(name: 'ap_southeast_2',
+        defaultValue: '',
+        description : 'Give only AMI value like ami-0e61a528d63cac625 and no spaces allowed ')
+         
+        string(name: 'ca_central_1',
+        defaultValue: '',
+        description : 'Give only AMI value like ami-0e61a528d63cac625 and no spaces allowed ')  
+
+        string(name: 'eu_central_1',
+        defaultValue: '',
+        description : 'Give only AMI value like ami-0e61a528d63cac625 and no spaces allowed ')
+        
+        string(name: 'eu_west_1',
+        defaultValue: '',
+        description : 'Give only AMI value like ami-0e61a528d63cac625 and no spaces allowed ')  
+
+        string(name: 'eu_west_3',
+        defaultValue: '',
+        description : 'Give only AMI value ami-0c417dac706cc61c2 and no spaces allowed ')  
+
+        string(name: 'us_east_1',
+        defaultValue: '',
+        description : 'Give only AMI value like ami-075244da442feb724 and no spaces allowed ')
+        
+        string(name: 'us_east_2',
+        defaultValue: '',
+        description : 'Give only AMI value ami-0c417dac706cc61c2 and no spaces allowed ')
+        
+        string(name: 'us_west_1',
+        defaultValue: '',
+        description : 'Give only AMI value  ami-0d08102b950a6bdee and no spaces allowed')
+        
+        string(name: 'us_west_2',
+        defaultValue: '',
+        description : 'Give only AMI value like ami-0e61a528d63cac625 and no spaces allowed ')
+	     
+
+  }
+	
+   
+	
+	     
+stages {
+    stage('Checkout iics-k8s-environments SCM'){
+        agent {
+                label 'devops'
+            }
+            steps{
+                checkout changelog: false, poll: false, scm: [$class: 'GitSCM', branches: [[name: '*/r35_cdi']], doGenerateSubmoduleConfigurations: false, extensions: [[$class: 'LocalBranch', localBranch: '**'], [$class: 'WipeWorkspace']], submoduleCfg: [], userRemoteConfigs: [[credentialsId: 'infa-devopsdeploybot', url: 'https://github.com/infa-bagarwal/iics-k8s-environments.git']]]
+            }
+        }
+	          
+	stage('First stage: Replace AMI groupAgentId') {
+       agent {
+                label 'devops'
+            }
+	   
+	   steps{
+	   dir('/home/cloud-user/chef-repo')
+	   {
+	 
+	     sh '''
+		 #/bin/bash
+		    ChefEnvironment=$(knife environment list | grep $Environment | grep pod1-cdi-services | tail -1)
+
+            tempChefEnvFile="/tmp/$ChefEnvironment.json"
+
+            echo "grab the right env file"
+            knife download environments/$ChefEnvironment.json
+
+            echo "move the downloaded env file to tempLocation"
+            mv ./environments/$ChefEnvironment.json $tempChefEnvFile
+
+            python /home/cloud-user/ami-files/ami_update_env_json.py $tempChefEnvFile
+            cat $tempChefEnvFiles
+       '''
+	   }  	   
+	   
+        }
+      
+	}
+
+    stage('update properties in git'){
+            agent {
+                label 'devops'
+            }
+            steps {
+                dir("$WORKSPACE"){
+                     withCredentials([usernamePassword(credentialsId: 'infa-devopsdeploybot', passwordVariable: 'GIT_PASSWORD', usernameVariable: 'GIT_USERNAME')]){
+                    script{
+                        echo params.'Environment'
+                        if (params.'Environment' == "MREL-AWS"){
+                            env.outputFileName = WORKSPACE + "/EnvironmentJsonsV2/R37/properties/cdi-aws-mrel-pod1/cdi-pod-services.properties"
+                        }
+                        else if(params.'Environment' == "MREL-AWS"){
+                             env.outputFileName = WORKSPACE + "/EnvironmentJsonsV2/R37/properties/cdi-aws-pod1-upgrade/cdi-pod-services.properties"
+
+                        }
+                	sh '''
+                	python /home/cloud-user/ami-files/ami_update_properties_file.py $WORKSPACE
+                	echo $outputFileName
+                	git status
+                            git add $outputFileName
+                            echo "git status before commit"
+                            git status
+                            git config --global user.name "${GIT_USERNAME}"
+
+                            if git diff --cached --exit-code; then
+                                echo "Nothing to commit, skip push"
+                            else
+                                echo There are some changes
+                                git commit -m "Updating artifactVersion file ${outputFilename}" -a
+                                echo "git status after commit"
+                                git status
+                                git push https://${GIT_USERNAME}:${GIT_PASSWORD}@github.com/infa-bagarwal/iics-k8s-environments.git r35_cdi
+                            fi
+                	'''
+                }
+                }
+            }
+            }
+    }
+	
+	
+	
+	
+	
+	   
+	     
+	 }
+}
